@@ -1,0 +1,78 @@
+name: Test APIs
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Test Gemini
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          STATUS=$(curl -sS \
+            -o gemini-response.json \
+            -w "%{http_code}" \
+            -X POST \
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent" \
+            -H "x-goog-api-key: $GEMINI_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "contents": [{
+                "parts": [{
+                  "text": "Reply with exactly: GEMINI_OK"
+                }]
+              }]
+            }')
+
+          echo "Gemini HTTP status: $STATUS"
+
+          if [ "$STATUS" != "200" ]; then
+            echo "Gemini test FAILED"
+            cat gemini-response.json
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          import json
+          with open("gemini-response.json") as f:
+              data = json.load(f)
+          text = data["candidates"][0]["content"]["parts"][0]["text"]
+          print("Gemini response received successfully.")
+          print("Response:", text.strip())
+          PY
+
+      - name: Test TMDB
+        env:
+          TMDB_BEARER_TOKEN: ${{ secrets.TMDB_BEARER_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          STATUS=$(curl -sS \
+            -o tmdb-response.json \
+            -w "%{http_code}" \
+            "https://api.themoviedb.org/3/movie/popular?language=en-US&page=1" \
+            -H "Authorization: Bearer $TMDB_BEARER_TOKEN" \
+            -H "accept: application/json")
+
+          echo "TMDB HTTP status: $STATUS"
+
+          if [ "$STATUS" != "200" ]; then
+            echo "TMDB test FAILED"
+            cat tmdb-response.json
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          import json
+          with open("tmdb-response.json") as f:
+              data = json.load(f)
+          movies = data.get("results", [])
+          if not movies:
+              raise SystemExit("TMDB returned no movies.")
+          print(f"TMDB response received successfully: {len(movies)} movies.")
+          PY
