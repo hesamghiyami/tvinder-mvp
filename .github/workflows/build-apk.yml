@@ -6,11 +6,12 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     permissions:
       contents: read
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Flutter
@@ -19,7 +20,7 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Create Android scaffold and build
+      - name: Build Tvinder Online Test APK
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: gemini-3.5-flash-lite
@@ -28,9 +29,15 @@ jobs:
           chmod +x tool/build_apk.sh
           ./tool/build_apk.sh
 
-      - name: Upload APK
+      - name: Verify APK exists
+        run: |
+          test -f tvinder-online-test.apk
+          ls -lh tvinder-online-test.apk
+
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: tvinder-mvp-apk
-          path: tvinder-mvp.apk
+          name: tvinder-online-test-apk
+          path: tvinder-online-test.apk
           if-no-files-found: error
+          retention-days: 7
