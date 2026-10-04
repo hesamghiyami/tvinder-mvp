@@ -248,7 +248,7 @@ class GeminiEngine {
 
   Future<Map<String, dynamic>> _jsonPrompt(String prompt) async {
     final uri = Uri.parse(
-        'https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$apiKey');
+        'https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent');
     final data = await NetworkJson.post(uri, {
       'contents': [
         {
@@ -262,6 +262,8 @@ class GeminiEngine {
         'temperature': 0.72,
         'responseMimeType': 'application/json',
       }
+    }, headers: {
+      'x-goog-api-key': apiKey,
     });
     final candidates = data['candidates'];
     if (candidates is! List || candidates.isEmpty) {
@@ -615,7 +617,6 @@ class SessionScreen extends StatefulWidget {
 
 class _SessionScreenState extends State<SessionScreen> {
   final _gemini = GeminiEngine();
-  final _demo = DemoEngine();
   final _tmdb = TmdbEngine();
 
   Stage _stage = Stage.splash;
@@ -661,27 +662,24 @@ class _SessionScreenState extends State<SessionScreen> {
     _round = 0;
     _slot = 0;
     setState(() => _stage = Stage.loading);
+
+    if (!_gemini.enabled) {
+      _showServiceError('سرویس هوش مصنوعی تنظیم نشده');
+      return;
+    }
+
     try {
-      final initial = _gemini.enabled ? await _gemini.initialBundle(_profile) : _demo.initial(_profile);
+      final initial = await _gemini.initialBundle(_profile);
       if (!mounted) return;
       _question = initial.question;
       _branches = initial.branches;
       setState(() => _stage = Stage.question);
     } on SocketException catch (_) {
       _showInternetError();
-      if (mounted) setState(() => _stage = Stage.loading);
-      await Future.delayed(const Duration(seconds: 1));
-      if (mounted) _startQuestions();
     } on TimeoutException catch (_) {
       _showInternetError();
-      if (mounted) setState(() => _stage = Stage.loading);
-      await Future.delayed(const Duration(seconds: 1));
-      if (mounted) _startQuestions();
     } catch (_) {
-      final initial = _demo.initial(_profile);
-      _question = initial.question;
-      _branches = initial.branches;
-      if (mounted) setState(() => _stage = Stage.question);
+      _showServiceError('خطا در دریافت سؤال. دوباره وارد اپ شو');
     }
   }
 
@@ -692,14 +690,16 @@ class _SessionScreenState extends State<SessionScreen> {
     final historySnapshot = List<AnswerRecord>.of(_history);
     final profileSnapshot = _profile;
     _branchError = null;
-    final future = _gemini.enabled
-        ? _gemini.branches(
-            currentQuestion: q,
-            questionNumber: number,
-            history: historySnapshot,
-            profile: profileSnapshot,
-          )
-        : Future.value(_demo.branches(q, profileSnapshot, historySnapshot));
+    if (!_gemini.enabled) {
+      _branchError = StateError('Gemini is not configured');
+      return;
+    }
+    final future = _gemini.branches(
+      currentQuestion: q,
+      questionNumber: number,
+      history: historySnapshot,
+      profile: profileSnapshot,
+    );
     _branchFuture = future;
     future.then((b) {
       if (!mounted || q != _question) return;
@@ -719,8 +719,12 @@ class _SessionScreenState extends State<SessionScreen> {
       _prefetchIfNeeded();
       try {
         bundle = await _branchFuture?.timeout(const Duration(seconds: 8));
-      } catch (_) {
-        _showInternetError();
+      } catch (e) {
+        if (e is SocketException || e is TimeoutException) {
+          _showInternetError();
+        } else {
+          _showServiceError('خطا در دریافت سؤال بعدی');
+        }
         return false;
       }
     }
@@ -752,30 +756,28 @@ class _SessionScreenState extends State<SessionScreen> {
     if (!mounted) return;
     setState(() => _stage = Stage.analyzing);
     try {
-      final taste = _gemini.enabled
-          ? await _gemini.finalize(_history, _profile)
-          : _demo.finalize(_history, _profile);
+      if (!_gemini.enabled || !_tmdb.enabled) {
+        throw StateError('Online services are not configured');
+      }
+
+      final taste = await _gemini.finalize(_history, _profile);
       _profile = taste.profile;
 
-      List<Movie> candidates;
-      if (_tmdb.enabled) {
-        candidates = await _tmdb.candidates(taste);
-        if (_gemini.enabled && candidates.isNotEmpty) {
-          final ids = await _gemini.rankMovies(taste, candidates);
-          final map = {for (final m in candidates) m.id: m};
-          final ranked = <Movie>[];
-          for (final id in ids) {
-            final m = map.remove(id);
-            if (m != null) ranked.add(m);
-          }
-          ranked.addAll(map.values);
-          candidates = ranked;
+      var candidates = await _tmdb.candidates(taste);
+      if (candidates.isNotEmpty) {
+        final ids = await _gemini.rankMovies(taste, candidates);
+        final map = {for (final m in candidates) m.id: m};
+        final ranked = <Movie>[];
+        for (final id in ids) {
+          final m = map.remove(id);
+          if (m != null) ranked.add(m);
         }
-      } else {
-        candidates = _demo.rank(taste);
+        ranked.addAll(map.values);
+        candidates = ranked;
       }
+
       _rankedMovies = _enforceAnimationRule(candidates, taste.profile);
-      if (_rankedMovies.isEmpty) throw StateError('No movies');
+      if (_rankedMovies.isEmpty) throw StateError('No movies returned');
       _candidateCursor = 0;
       _seenMovieIds.clear();
       _round = 0;
@@ -787,22 +789,10 @@ class _SessionScreenState extends State<SessionScreen> {
       if (mounted) setState(() => _stage = Stage.movie);
     } on SocketException catch (_) {
       _showInternetError();
-      if (mounted) setState(() => _stage = Stage.analyzing);
     } on TimeoutException catch (_) {
       _showInternetError();
-      if (mounted) setState(() => _stage = Stage.analyzing);
     } catch (_) {
-      final taste = _demo.finalize(_history, _profile);
-      _rankedMovies = _demo.rank(taste);
-      _candidateCursor = 0;
-      _seenMovieIds.clear();
-      _round = 0;
-      _slot = 0;
-      _currentMovie = _takeNextMovie();
-      if (!mounted) return;
-      setState(() => _stage = Stage.ready);
-      await Future.delayed(const Duration(milliseconds: 1200));
-      if (mounted) setState(() => _stage = Stage.movie);
+      _showServiceError('خطا در آماده‌کردن پیشنهادها. دوباره وارد اپ شو');
     }
   }
 
@@ -852,14 +842,22 @@ class _SessionScreenState extends State<SessionScreen> {
   }
 
   void _showInternetError() {
+    _showMessage('اتصال اینترنت را بررسی کنید');
+  }
+
+  void _showServiceError(String message) {
+    _showMessage(message);
+  }
+
+  void _showMessage(String message) {
     if (!mounted) return;
     ScaffoldMessenger.of(context)
       ..clearSnackBars()
       ..showSnackBar(
         SnackBar(
-          content: const Directionality(
+          content: Directionality(
             textDirection: TextDirection.rtl,
-            child: Text('اتصال اینترنت را بررسی کنید', textAlign: TextAlign.center),
+            child: Text(message, textAlign: TextAlign.center),
           ),
           behavior: SnackBarBehavior.floating,
           backgroundColor: _charcoal,
